@@ -1,0 +1,9 @@
+import Link from "next/link";
+import { resources, projectName } from "../generated/domain";
+export default function Home() {
+  return <main><p className="eyebrow">Private workspace</p><h1>{projectName}</h1>
+    <p>Choose a resource. Access is restricted to your own records.</p>
+    <nav aria-label="Resources">{resources.map(r => <Link key={r.name} href={`/${r.name}`}>{r.label} →</Link>)}</nav>
+    <p className="notice">Sign in through your organization’s session service. A missing session cannot access data.</p>
+  </main>;
+}

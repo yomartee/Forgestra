@@ -1,0 +1,35 @@
+"use client";
+import Link from "next/link";
+import { useState } from "react";
+import { useList, useOne, useCreate, useUpdate, useDelete } from "@refinedev/core";
+import { resourceByName } from "../generated/hasura";
+import type { DomainRecord } from "../generated/domain";
+export function ResourceList({ resource }: { resource: string }) {
+  const spec = resourceByName(resource);
+  const result = useList<DomainRecord>({ resource, pagination: { pageSize: 25 } });
+  const remove = useDelete();
+  const query = result.query;
+  return <main><Link href="/">← Workspace</Link><header><h1>{spec.label}</h1><Link href={`/${resource}/create`}>Create record</Link></header>
+    {query.isLoading && <p role="status">Loading records…</p>}
+    {query.isError && <p role="alert">{query.error.message}</p>}
+    {remove.mutation.isError && <p role="alert">Delete denied or backend unavailable</p>}
+    {!query.isLoading && !query.isError && <><p>{result.result.total} {result.result.total === 1 ? "record" : "records"}</p><table><thead><tr>{spec.fields.map(f => <th key={f.name}>{f.label}</th>)}<th>Actions</th></tr></thead><tbody>
+      {result.result.data.map(record => <tr key={record.id}>{spec.fields.map(f => <td key={f.name}>{String(record[f.name] ?? "—")}</td>)}<td><Link href={`/${resource}/${record.id}/edit`}>Edit</Link>{" "}<button disabled={remove.mutation.isPending} onClick={() => { if (window.confirm("Delete this record?")) remove.mutate({ resource, id: record.id }); }}>Delete</button></td></tr>)}
+    </tbody></table>{result.result.data.length === 0 && <p>No records yet.</p>}</>}
+  </main>;
+}
+function Editor({ resource, record }: { resource: string; record?: DomainRecord }) {
+  const spec = resourceByName(resource);
+  const [values, setValues] = useState<Record<string, unknown>>(() => Object.fromEntries(spec.fields.map(f => [f.name, record?.[f.name] ?? (f.nullable ? null : f.type === "boolean" ? false : f.type === "number" ? 0 : "")])));
+  const create = useCreate(); const update = useUpdate(); const mutation = record ? update : create;
+  const [saved, setSaved] = useState(false);
+  return <><h1>{record ? "Edit record" : "Create record"}</h1><form onSubmit={event => { event.preventDefault(); setSaved(false); const options = { onSuccess: () => setSaved(true) }; if (record) update.mutate({ resource, id: record.id, values }, options); else create.mutate({ resource, values }, options); }}>
+    {spec.fields.map(f => <label key={f.name}>{f.label}{f.type === "boolean" && f.nullable ? <select name={f.name} value={values[f.name] === null ? "null" : String(values[f.name])} onChange={e => setValues(v => ({ ...v, [f.name]: e.target.value === "null" ? null : e.target.value === "true" }))}><option value="null">Not set</option><option value="true">Yes</option><option value="false">No</option></select> : <input name={f.name} type={f.type === "boolean" ? "checkbox" : f.type === "number" ? "number" : "text"} step={f.type === "number" ? "any" : undefined} required={!f.nullable && f.type !== "boolean"} maxLength={1000} checked={f.type === "boolean" ? Boolean(values[f.name]) : undefined} value={f.type === "boolean" ? undefined : String(values[f.name] ?? "")} onChange={e => setValues(v => ({ ...v, [f.name]: f.type === "boolean" ? e.target.checked : f.type === "number" ? (e.target.value === "" && f.nullable ? null : Number(e.target.value)) : e.target.value === "" && f.nullable ? null : e.target.value }))} />}</label>)}
+    <button disabled={mutation.mutation.isPending} type="submit">Save record</button>{mutation.mutation.isError && <p role="alert">Save denied or backend unavailable</p>}{saved && <p role="status">Saved successfully.</p>}
+  </form></>;
+}
+export function ResourceCreate({ resource }: { resource: string }) { return <main><Link href={`/${resource}`}>← Back to list</Link><Editor resource={resource} /></main>; }
+export function ResourceEdit({ resource, id }: { resource: string; id: string }) {
+  const { query } = useOne<DomainRecord>({ resource, id });
+  return <main><Link href={`/${resource}`}>← Back to list</Link>{query.isLoading ? <p role="status">Loading record…</p> : query.isError || !query.data ? <p role="alert">Record unavailable or access denied</p> : <Editor resource={resource} record={query.data.data} />}</main>;
+}

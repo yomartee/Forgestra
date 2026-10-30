@@ -1,0 +1,8 @@
+{
+  "provider": "offline",
+  "model": null,
+  "credential_env": null,
+  "timeout_seconds": 30,
+  "max_tokens": 4096,
+  "retries": 0
+}

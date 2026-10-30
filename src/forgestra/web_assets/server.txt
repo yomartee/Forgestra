@@ -1,0 +1,58 @@
+// Server-only module. No admin/provider credential is read or forwarded.
+import { validateRequest, validResult } from "./hasura.ts";
+function fail(status: number, message: string) { return Response.json({ errors: [{ message }] }, { status, headers: { "Cache-Control": "no-store" } }); }
+export function inspectConfiguration(endpoint = process.env.HASURA_GRAPHQL_ENDPOINT) {
+  try {
+    const url = new URL(endpoint ?? "");
+    if (url.username || url.password || url.search || url.hash || url.pathname !== "/v1/graphql" || url.hostname.endsWith(".invalid") || !(url.protocol === "https:" || url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))) throw new Error();
+    return { status: "CONFIGURED_NOT_TESTED", connectivity: "NOT_RUN" };
+  } catch { return { status: "UNCONFIGURED", connectivity: "NOT_RUN" }; }
+}
+async function bounded(stream: ReadableStream<Uint8Array> | null) {
+  if (!stream) throw new Error();
+  const reader = stream.getReader(); let total = 0; const chunks: Uint8Array[] = [];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Body timeout")), 3000); });
+  try { for (;;) { const {value, done} = await Promise.race([reader.read(), deadline]); if (done) break; total += value.byteLength; if (total > 32768) throw new Error(); chunks.push(value); } }
+  finally { clearTimeout(timer); void reader.cancel().catch(() => {}); reader.releaseLock(); }
+  const bytes = new Uint8Array(total); let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+}
+export async function forwardGraphQL(request: Request, endpoint = process.env.HASURA_GRAPHQL_ENDPOINT) {
+  if (request.method !== "POST") return fail(405, "Method not allowed");
+  // Next standalone normalizes Request.url to localhost; use the validated Host
+  // header, never caller-provided X-Forwarded-Host, to preserve same-origin checks.
+  try {
+    const url = new URL(request.url);
+    const host = request.headers.get("host") ?? url.host;
+    if (!/^[A-Za-z0-9.\[\]:-]+$/.test(host) || request.headers.get("origin") !== new URL(url.protocol + "//" + host).origin) return fail(403, "Origin denied");
+  } catch { return fail(403, "Origin denied"); }
+  const cookies = (request.headers.get("cookie") ?? "").split(";").map(v => v.trim()).filter(v => v.startsWith("forgestra_user="));
+  if (cookies.length !== 1) return fail(401, "Sign in required");
+  const token = cookies[0].slice("forgestra_user=".length);
+  if (token.length > 8192 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) return fail(401, "Sign in required");
+  // Unverified claims may DENY a request, never authorize it; Hasura verifies the signature.
+  try {
+    const claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+    const session = claims["https://hasura.io/jwt/claims"];
+    if (!Number.isSafeInteger(claims.exp) || claims.exp <= Date.now()/1000
+        || session?.["x-hasura-default-role"] !== "user"
+        || JSON.stringify(session["x-hasura-allowed-roles"]) !== '["user"]'
+        || typeof session["x-hasura-user-id"] !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session["x-hasura-user-id"])) return fail(403, "Request denied");
+  } catch { return fail(401, "Sign in required"); }
+  if (inspectConfiguration(endpoint).status !== "CONFIGURED_NOT_TESTED") return fail(503, "Backend not configured");
+  if (!/^application\/json(?:\s*;\s*charset=utf-8)?\s*$/i.test(request.headers.get("content-type") ?? "")) return fail(400, "Invalid request");
+  let body;
+  try { body = validateRequest(await bounded(request.body)); } catch { return fail(400, "Invalid operation"); }
+  try {
+    const response = await fetch(endpoint!, { method: "POST", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(3000), headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ operationName: body.operation.name, query: body.operation.query, variables: body.variables }) });
+    if (response.status === 401 || response.status === 403) return fail(403, "Request denied");
+    if (!response.ok) return fail(502, "Backend unavailable");
+    const result = await bounded(response.body);
+    if (!result || typeof result !== "object" || !("data" in result) || "errors" in result) return fail(403, "Request denied");
+    if (!validResult(body.operation, result.data)) return fail(502, "Invalid backend response");
+    return Response.json({ data: result.data }, { headers: { "Cache-Control": "no-store" } });
+  } catch { return fail(502, "Backend unavailable"); }
+}

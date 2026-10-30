@@ -1,0 +1,41 @@
+# Generated web project
+
+This candidate uses Next App Router and Refine with a typed Hasura GraphQL data
+provider. Root, resource list/create and [id]/edit routes share one route tree.
+Run npm ci --ignore-scripts, npm run typecheck, npm run lint, npm test, npm run
+build, and npm start. Lifecycle scripts and dependency upgrades are not needed.
+Use the pinned Node/npm engines and the committed integrity lockfile.
+
+The domain.json contract is authoritative. SQL and Hasura metadata are reviewed
+inputs only; nothing applies them automatically. Review migrations against an
+empty controlled database, configure a real Hasura engine and test its row
+permissions before deployment. The local GraphQL test backend is NOT Hasura.
+Relations, enums, protected resources and schema synchronization are unsupported
+and rejected. Regeneration creates a NEW candidate; preserve custom code through
+an explicit reviewed merge. src/generated and src/custom have separate ownership.
+
+Production authentication requires a trusted organization OIDC/session service
+that issues a forgestra_user cookie containing a signed end-user JWT. The issuer
+must set HttpOnly, Secure, SameSite=Strict and Path=/. It must validate login,
+expiration, issuer/audience and revoke/logout correctly; no issuer is implemented
+here. Configure Hasura JWT verification and user role/subject claims server-side.
+The frontend never trusts a caller-selected owner or an admin role. Hasura MUST
+enforce owner_id = X-Hasura-User-Id; UI checks are not authorization.
+
+Set HASURA_GRAPHQL_ENDPOINT only in the server environment. Only HTTPS or an
+explicit localhost HTTP fixture endpoint at /v1/graphql is supported. URL userinfo,
+queries and fragments are rejected. Admin/provider secrets are neither read nor
+forwarded by the app. Never put them in NEXT_PUBLIC_* variables or build arguments.
+The proxy accepts only generated operation documents and validated variables,
+requires a same-origin POST and end-user cookie, and uses bounded responses and
+timeouts. Configuration inspection always reports connectivity NOT_RUN.
+
+Local tests exercise CRUD and ownership denial against an authored GraphQL
+protocol fixture with ephemeral signing keys. They do not verify a real Hasura
+engine, deployed identity service, live provider, container or public product.
+Build container with an operator-reviewed immutable Node 24 base-image digest
+passed as NODE_BASE. No default floating image is accepted. Runtime UID is 10001.
+Never supply credentials during dependency installation or build. Container
+build/run and image-layer secret scanning require Docker and separate evidence.
+Factory automation, publication and schedules remain disabled; no generated
+workflow or autonomous dispatch is included. Mobile remains planned.

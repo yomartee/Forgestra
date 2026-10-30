@@ -1,0 +1,62 @@
+// Authored local GraphQL protocol fixture. This is NOT a Hasura engine.
+import http from "node:http";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { buildSchema, graphql, GraphQLError } from "graphql";
+import { resources } from "../src/generated/domain.ts";
+export const USER_A = "11111111-1111-4111-8111-111111111111";
+export const USER_B = "22222222-2222-4222-8222-222222222222";
+export async function startBackend() {
+  const secret = randomBytes(32); const rows = new Map(); let calls = 0; let adminHeaders = 0;
+  let types = "scalar uuid\n"; const queries = []; const mutations = []; const root = {};
+  const denied = () => { throw new GraphQLError("Fixture authorization denied", { extensions: { code: "permission-denied" } }); };
+  for (const r of resources) {
+    const fields = r.fields.map(f => `${f.name}:${{string:"String",number:"Float",boolean:"Boolean"}[f.type]}${f.nullable ? "" : "!"}`).join(" ");
+    const inputs = r.fields.map(f => `${f.name}:${{string:"String",number:"Float",boolean:"Boolean"}[f.type]}`).join(" ");
+    types += `type ${r.name}_record{id:uuid! ${fields}} type ${r.name}_aggregate_fields{count:Int!} type ${r.name}_aggregate{aggregate:${r.name}_aggregate_fields!} input ${r.name}_order_by{id:order_by} input ${r.name}_insert_input{id:uuid owner_id:uuid ${inputs}} input ${r.name}_set_input{owner_id:uuid ${inputs}} input ${r.name}_pk_columns_input{id:uuid!}\n`;
+    queries.push(`${r.name}(limit:Int!,offset:Int!,order_by:${r.name}_order_by):[${r.name}_record!]! ${r.name}_aggregate:${r.name}_aggregate! ${r.name}_by_pk(id:uuid!):${r.name}_record`);
+    mutations.push(`insert_${r.name}_one(object:${r.name}_insert_input!):${r.name}_record update_${r.name}_by_pk(pk_columns:${r.name}_pk_columns_input!,_set:${r.name}_set_input!):${r.name}_record delete_${r.name}_by_pk(id:uuid!):${r.name}_record`);
+    const own = context => [...rows.values()].filter(v => v.table === r.name && v.owner === context.uid);
+    const find = (id, context) => own(context).find(v => v.id === id) ?? null;
+    root[r.name] = (args, context) => own(context).slice(args.offset, args.offset + args.limit);
+    root[r.name + "_aggregate"] = (_, context) => ({ aggregate: { count: own(context).length } });
+    root[r.name + "_by_pk"] = (args, context) => find(args.id, context);
+    root["insert_" + r.name + "_one"] = (args, context) => {
+      if ("owner_id" in args.object || "id" in args.object) denied();
+      const item = { ...args.object, id: randomUUID(), owner: context.uid, table: r.name };
+      for (const f of r.fields) { if (item[f.name] === undefined) item[f.name] = null; if (!f.nullable && item[f.name] === null) denied(); }
+      rows.set(item.id, item); return item;
+    };
+    root["update_" + r.name + "_by_pk"] = (args, context) => {
+      if ("owner_id" in args._set) denied();
+      const item = find(args.pk_columns.id, context); if (!item) return null;
+      Object.assign(item, args._set); return item;
+    };
+    root["delete_" + r.name + "_by_pk"] = (args, context) => { const item = find(args.id, context); if (item) rows.delete(item.id); return item; };
+  }
+  const schema = buildSchema(types + `enum order_by{asc desc} type Query{${queries.join(" ")}} type Mutation{${mutations.join(" ")}}`);
+  const signature = text => createHmac("sha256", secret).update(text).digest("base64url");
+  const token = (uid, role = "user") => {
+    const head = Buffer.from(JSON.stringify({alg:"HS256",typ:"JWT"})).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({sub:uid,role,exp:Math.floor(Date.now()/1000)+300,"https://hasura.io/jwt/claims":{"x-hasura-default-role":role,"x-hasura-allowed-roles":[role],"x-hasura-user-id":uid}})).toString("base64url");
+    return `${head}.${payload}.${signature(head+"."+payload)}`;
+  };
+  const server = http.createServer(async (request, response) => {
+    calls++; if (request.headers["x-hasura-admin-secret"]) adminHeaders++;
+    response.setHeader("content-type", "application/json");
+    try {
+      if (request.url !== "/v1/graphql" || request.method !== "POST") throw new Error();
+      const raw = (request.headers.authorization ?? "").replace(/^Bearer /, "");
+      const [head, body, sign] = raw.split("."); const want = signature(head+"."+body);
+      if (typeof sign !== "string" || Buffer.byteLength(want) !== Buffer.byteLength(sign) || !timingSafeEqual(Buffer.from(want),Buffer.from(sign))) throw new Error();
+      const claims = JSON.parse(Buffer.from(body,"base64url").toString());
+      if (![USER_A,USER_B].includes(claims.sub) || claims.role !== "user" || claims.exp < Date.now()/1000) throw new Error();
+      let input = ""; for await (const chunk of request) { input += chunk; if (input.length > 32768) throw new Error(); }
+      const envelope = JSON.parse(input);
+      const result = await graphql({schema,source:envelope.query,variableValues:envelope.variables,operationName:envelope.operationName,rootValue:root,contextValue:{uid:claims.sub}});
+      response.end(JSON.stringify(result));
+    } catch { response.statusCode=403; response.end(JSON.stringify({errors:[{message:"Fixture authorization denied"}]})); }
+  });
+  await new Promise(resolve => server.listen(0,"127.0.0.1",resolve));
+  const endpoint = `http://127.0.0.1:${server.address().port}/v1/graphql`;
+  return {endpoint,token,rows,calls:()=>calls,adminHeaders:()=>adminHeaders,close:()=>new Promise(resolve=>server.close(resolve))};
+}

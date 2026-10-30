@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools==84.1.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forgestra-mcp"
+version = "0.2.0.dev0"
+description = "Explicit stdio-only read-only Forgestra adapter; privileged operations disabled"
+requires-python = ">=3.14,<3.15"
+dependencies = ["forgestra==0.2.0.dev0", "mcp==2.3.0"]
+# Limited owned first-party Apache-2.0 intent is recorded in root docs/PROVENANCE.md.
+# No package-wide SPDX assertion is made pending applicable scope/notice review.
+
+[project.scripts]
+forgestra-mcp = "forgestra_mcp.server:main"
+
+[tool.setuptools]
+packages = ["forgestra_mcp"]
+package-dir = {"" = "src"}
+include-package-data = false

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "checked_date": "2026-10-22",
+  "state": "DISABLED_CANDIDATE_CONTRACT",
+  "provider": "anthropic",
+  "candidate_model": "claude-sonnet-5-5",
+  "credential_env": "ANTHROPIC_API_KEY",
+  "model_source": "https://platform.claude.com/docs/en/models/overview",
+  "action_commit": "6b6870e649b5ff408753befeaee5fc7989d4e6a9",
+  "action_source": "https://raw.githubusercontent.com/anthropics/claude-code-action/6b6870e649b5ff408753befeaee5fc7989d4e6a9/action.yml",
+  "reviewed_input_subset": ["prompt", "claude_args", "anthropic_api_key"],
+  "unsupported_direct_input": "model",
+  "source_evidence": "Selected keys reviewed at pinned source; this is extracted metadata, not a full vendored action or source-file checksum.",
+  "action_execution": "NOT_RUN",
+  "live_model_access": "NOT_RUN",
+  "sdk_install_compatibility": "NOT_RUN"
+}

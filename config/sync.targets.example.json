@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "targets": [
+    {
+      "schema_version": 1,
+      "mapping_id": "08100000-0000-4000-8000-000000000001",
+      "source_repository": "yomartee/sync-fixture-upstream",
+      "target_repository": "yomartee/sync-fixture-downstream",
+      "opted_in": false,
+      "paths": [
+        {
+          "source": "template",
+          "target": "app"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+"use client";
+import { Refine } from "@refinedev/core";
+import { dataProvider } from "../generated/provider";
+import { resources } from "../generated/domain";
+export function Providers({ children }: { children: React.ReactNode }) {
+  return <Refine options={{ disableTelemetry: true, reactQuery: { clientConfig: { defaultOptions: { queries: { retry: false } } } } }} dataProvider={dataProvider} resources={resources.map(r => ({
+    name: r.name, list: `/${r.name}`, create: `/${r.name}/create`, edit: `/${r.name}/:id/edit`,
+  }))}>{children}</Refine>;
+}

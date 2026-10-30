@@ -1,0 +1,37 @@
+import { after, before, test } from "node:test";
+import assert from "node:assert/strict";
+import { operations, resources } from "../src/generated/domain.ts";
+import { validateRequest, validResult } from "../src/generated/hasura.ts";
+import { forwardGraphQL, inspectConfiguration } from "../src/generated/server.ts";
+import { startBackend, USER_A, USER_B } from "./backend-fixture.mjs";
+let backend;
+before(async()=>{backend=await startBackend();});
+after(async()=>{await backend.close();});
+function envelope(kind, variables) { const op=operations.find(o=>o.resource===resources[0].name&&o.kind===kind); return {operationName:op.name,query:op.query,variables}; }
+function values() { return Object.fromEntries(resources[0].fields.map(f=>[f.name,f.nullable?null:f.type==="boolean"?false:f.type==="number"?1:"Private task"])); }
+function request(body, token=backend.token(USER_A), origin="http://localhost") { return new Request("http://localhost/api/graphql", {method:"POST",headers:{origin,"content-type":"application/json",...(token?{cookie:`forgestra_user=${token}`}:{})},body:JSON.stringify(body)}); }
+async function invoke(kind, variables, user=USER_A) { const response=await forwardGraphQL(request(envelope(kind,variables),backend.token(user)),backend.endpoint); return {status:response.status,body:await response.json()}; }
+test("configuration inspection never reports backend liveness",()=>{assert.equal(inspectConfiguration("https://example.invalid/v1/graphql").status,"UNCONFIGURED");assert.equal(inspectConfiguration(backend.endpoint).connectivity,"NOT_RUN");});
+test("credentials in endpoint URLs are rejected",()=>{const url=new URL("https://example.invalid/v1/graphql");url.username="placeholder";url.password="placeholder";assert.equal(inspectConfiguration(url.href).status,"UNCONFIGURED");});
+test("missing session denies before backend request",async()=>{const count=backend.calls();assert.equal((await forwardGraphQL(request(envelope("list",{limit:25,offset:0}),null),backend.endpoint)).status,401);assert.equal(backend.calls(),count);});
+test("cross-origin request denied",async()=>{assert.equal((await forwardGraphQL(request(envelope("list",{limit:25,offset:0}),backend.token(USER_A),"https://other.invalid"),backend.endpoint)).status,403);});
+test("standalone normalized URL uses the validated original Host",async()=>{const r=request(envelope("list",{limit:25,offset:0}),backend.token(USER_A),"http://127.0.0.1:3000");r.headers.set("host","127.0.0.1:3000");assert.equal((await forwardGraphQL(r,backend.endpoint)).status,200);r.headers.set("host","attacker.invalid");assert.equal((await forwardGraphQL(r,backend.endpoint)).status,403);});
+test("forged user JWT rejected by backend",async()=>{const raw=backend.token(USER_A);const parts=raw.split(".");parts[2]="notavalidsignature";assert.equal((await forwardGraphQL(request(envelope("list",{limit:25,offset:0}),parts.join(".")),backend.endpoint)).status,403);});
+test("admin role cannot grant access",async()=>{assert.equal((await forwardGraphQL(request(envelope("list",{limit:25,offset:0}),backend.token(USER_A,"admin")),backend.endpoint)).status,403);});
+test("typed operation envelope rejects introspection",()=>{assert.throws(()=>validateRequest({operationName:"IntrospectionQuery",query:"{__schema{types{name}}}",variables:{}}));});
+test("owner field injection denied before backend",()=>{assert.throws(()=>validateRequest(envelope("create",{object:{...values(),owner_id:USER_B}})));});
+test("pagination bounded and nonempty updates required",()=>{assert.throws(()=>validateRequest(envelope("list",{limit:0,offset:0})));assert.throws(()=>validateRequest(envelope("list",{limit:101,offset:0})));assert.throws(()=>validateRequest(envelope("update",{id:USER_A,patch:{}})));});
+test("wrong scalar type rejected",()=>{const v=values();const field=resources[0].fields[0];v[field.name]=field.type==="string"?17:"wrong";assert.throws(()=>validateRequest(envelope("create",{object:v})));});
+test("malformed backend result rejected",()=>{assert.equal(validResult(operations.find(o=>o.kind==="list"),{rows:[],aggregate:{aggregate:{count:-1}}}),false);});
+test("bounded request body fails closed",async()=>{const r=request(envelope("create",{object:{...values(),extra:"x".repeat(33000)}}));assert.equal((await forwardGraphQL(r,backend.endpoint)).status,400);});
+test("unconfigured backend is not ready",async()=>{assert.equal((await forwardGraphQL(request(envelope("list",{limit:25,offset:0})),"https://example.invalid/v1/graphql")).status,503);});
+test("unreachable backend has honest failure",async()=>{const r=await forwardGraphQL(request(envelope("list",{limit:25,offset:0})),"http://127.0.0.1:1/v1/graphql");assert.equal(r.status,502);assert.deepEqual(await r.json(),{errors:[{message:"Backend unavailable"}]});});
+test("create list read update delete through GraphQL",async()=>{const created=await invoke("create",{object:values()});assert.equal(created.status,200);const id=created.body.data.item.id;assert.ok(id);assert.equal((await invoke("get",{id})).body.data.item.id,id);assert.equal((await invoke("list",{limit:25,offset:0})).body.data.aggregate.aggregate.count,1);const field=resources[0].fields[0];const value=field.type==="string"?"Updated task":field.type==="number"?2:true;const updated=await invoke("update",{id,patch:{[field.name]:value}});assert.equal(updated.body.data.item[field.name],value);assert.equal((await invoke("delete",{id})).body.data.item.id,id);assert.equal((await invoke("get",{id})).body.data.item,null);});
+test("cross-user read update delete denied by backend",async()=>{const created=await invoke("create",{object:values()});const id=created.body.data.item.id;assert.equal((await invoke("get",{id},USER_B)).body.data.item,null);assert.equal((await invoke("update",{id,patch:values()},USER_B)).body.data.item,null);assert.equal((await invoke("delete",{id},USER_B)).body.data.item,null);assert.equal((await invoke("get",{id})).body.data.item.id,id);await invoke("delete",{id});});
+test("direct backend owner injection rejected independently of UI",async()=>{const name=resources[0].name;const response=await fetch(backend.endpoint,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${backend.token(USER_A)}`},body:JSON.stringify({query:`mutation($object:${name}_insert_input!){insert_${name}_one(object:$object){id}}`,variables:{object:{...values(),owner_id:USER_B}}})});assert.ok((await response.json()).errors.length);});
+test("admin credentials are never forwarded",()=>{assert.equal(backend.adminHeaders(),0);});
+
+
+test("misleading JSON media type denies before backend",async()=>{const count=backend.calls();const r=request(envelope("list",{limit:25,offset:0}));r.headers.set("content-type","application/json-invalid");assert.equal((await forwardGraphQL(r,backend.endpoint)).status,400);assert.equal(backend.calls(),count);});
+
+test("stalled body is bounded even if stream cancellation stalls",async()=>{const count=backend.calls();const original=request(envelope("list",{limit:25,offset:0}));const stream=new ReadableStream({start(c){c.enqueue(new TextEncoder().encode("{"));},cancel(){return new Promise(()=>{});}});const r=new Request(original.url,{method:"POST",headers:original.headers,body:stream,duplex:"half"});const started=Date.now();assert.equal((await forwardGraphQL(r,backend.endpoint)).status,400);assert.ok(Date.now()-started<5000);assert.equal(backend.calls(),count);});

@@ -1,0 +1,15 @@
+{
+  "setup": [],
+  "test": [
+    {
+      "name": "Forgestra reviewed offline regressions",
+      "run": "python -I scripts/run_safety_isolated.py"
+    }
+  ],
+  "validate": [
+    {
+      "name": "Strict workflow JSON/YAML subset",
+      "run": "python -I scripts/check_workflows.py"
+    }
+  ]
+}
