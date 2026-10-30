@@ -23,6 +23,101 @@ REGRESSION_CANARIES = (
     'synthetic-credential-"-backslash\\-end',
 )
 
+DIAGNOSTIC_PREFIX = "FORGESTRA_REGRESSION_DIAGNOSTIC_V1 "
+DIAGNOSTIC_PROFILE = "FORGESTRA_FACTORY_FAILURE_V1"
+MAX_DIAGNOSTIC_IDS = 20
+COUNT_FIELDS = {
+    "collected",
+    "tests",
+    "failures",
+    "errors",
+    "skipped",
+    "expected_failures",
+    "unexpected_successes",
+}
+
+
+def factory_test_ids(root=None):
+    """Static declared factory identifiers only; never import code for logging."""
+    from public_contract import source_paths
+    from forgestra.verification import plain_file
+
+    root = ROOT if root is None else Path(root)
+    names = set()
+    for relative in source_paths(root):
+        if not relative.startswith("tests/test_") or not relative.endswith(".py"):
+            continue
+        module = Path(relative).stem
+        tree = ast.parse(plain_file(root / relative))
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                for method in node.body:
+                    if isinstance(method, ast.FunctionDef) and method.name.startswith("test_"):
+                        names.add(module + "." + node.name + "." + method.name)
+    return names
+
+
+def valid_failure_diagnostic(value, known_ids):
+    """Diagnostic data never changes a check's verdict or grants authority."""
+    if not isinstance(value, dict) or set(value) != {
+        "profile",
+        "counts",
+        "test_ids",
+        "ids_omitted",
+        "unlisted_count",
+    }:
+        return False
+    counts, names = value["counts"], value["test_ids"]
+    if (
+        value["profile"] != DIAGNOSTIC_PROFILE
+        or not isinstance(counts, dict)
+        or set(counts) != COUNT_FIELDS
+        or any(type(counts[f]) is not int or not 0 <= counts[f] <= 1_000_000 for f in counts)
+        or not isinstance(names, list)
+        or len(names) > MAX_DIAGNOSTIC_IDS
+        or any(not isinstance(n, str) or n not in known_ids for n in names)
+        or names != sorted(set(names))
+        or any(type(value[f]) is not int or value[f] < 0 for f in ("ids_omitted", "unlisted_count"))
+    ):
+        return False
+    total = sum(counts[f] for f in COUNT_FIELDS - {"tests", "collected"})
+    return len(names) + value["ids_omitted"] + value["unlisted_count"] <= total
+
+
+def failure_diagnostic(result, counts):
+    known = factory_test_ids()
+    tests = [
+        case
+        for case, _ in result.failures + result.errors + result.skipped + result.expectedFailures
+    ]
+    tests.extend(result.unexpectedSuccesses)
+    names, unlisted = set(), 0
+    for test in tests:
+        # Subtest id() includes parameter reprs. Use only the owning factory method.
+        test = getattr(test, "test_case", test)
+        cls = type(test)
+        name = cls.__module__ + "." + cls.__qualname__ + "." + getattr(test, "_testMethodName", "")
+        if name in known:
+            names.add(name)
+        else:
+            unlisted += 1
+    ordered = sorted(names)
+    value = {
+        "profile": DIAGNOSTIC_PROFILE,
+        "counts": counts,
+        "test_ids": ordered[:MAX_DIAGNOSTIC_IDS],
+        "ids_omitted": max(0, len(ordered) - MAX_DIAGNOSTIC_IDS),
+        "unlisted_count": unlisted,
+    }
+    if not valid_failure_diagnostic(value, known):
+        raise ValueError("invalid authored diagnostic")
+    return value
+
+
+def emit_failure_diagnostic(result, counts, stream):
+    value = failure_diagnostic(result, counts)
+    stream.write(DIAGNOSTIC_PREFIX + json.dumps(value, sort_keys=True) + "\n")
+
 
 def valid_regression_result(document):
     fields = {
@@ -50,6 +145,11 @@ def run_suite(suite, stream=None):
 
     count = suite.countTestCases()
     if not count:
+        emit_failure_diagnostic(
+            unittest.TestResult(),
+            {f: 0 for f in COUNT_FIELDS},
+            stream if stream is not None else sys.stderr,
+        )
         return {"status": "FAILED", "tests": 0, "reason": "zero tests collected"}
     output = io.StringIO()
     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
@@ -65,7 +165,7 @@ def run_suite(suite, stream=None):
         and not result.expectedFailures
         and not result.unexpectedSuccesses
     )
-    return {
+    document = {
         "status": "PASSED" if passed else "FAILED",
         "collected": count,
         "tests": result.testsRun,
@@ -75,6 +175,13 @@ def run_suite(suite, stream=None):
         "expected_failures": len(result.expectedFailures),
         "unexpected_successes": len(result.unexpectedSuccesses),
     }
+    if not passed:
+        emit_failure_diagnostic(
+            result,
+            {f: document[f] for f in COUNT_FIELDS},
+            stream if stream is not None else sys.stderr,
+        )
+    return document
 
 
 def main():

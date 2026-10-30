@@ -16,6 +16,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def regression_failure_diagnostic(stderr):
+    """Expose only one finite validated factory diagnostic, never raw stderr."""
+    from check_safety import DIAGNOSTIC_PREFIX, factory_test_ids, valid_failure_diagnostic
+    from forgestra_safety import Blocked, strict_json_loads
+
+    invalid = {"profile": "FORGESTRA_FACTORY_FAILURE_V1", "status": "INVALID_DIAGNOSTIC"}
+    lines = [
+        line.removeprefix(DIAGNOSTIC_PREFIX)
+        for line in stderr.splitlines()
+        if line.startswith(DIAGNOSTIC_PREFIX)
+    ]
+    if len(lines) != 1 or len(lines[0]) > 12_000:
+        return invalid
+    try:
+        value = strict_json_loads(lines[0])
+        return value if valid_failure_diagnostic(value, factory_test_ids()) else invalid
+    except OSError, ValueError, TypeError, KeyError, SyntaxError, Blocked:
+        return invalid
+
+
 def scopes():
     from pr01_validation import PYTHON_SCOPE
 
@@ -101,7 +121,7 @@ def assess(name, code, stdout):
     if name == "regressions":
         try:
             return valid_regression_result(strict_json_loads(stdout))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return False
     if name in {
         "source-contract",
@@ -131,7 +151,7 @@ def assess(name, code, stdout):
                 and type(document.get("risk_tier")) is int
                 and document["risk_tier"] in {0, 1, 2}
             )
-        except (TypeError, ValueError, AttributeError):
+        except TypeError, ValueError, AttributeError:
             return False
     return name in {
         "build-install",
@@ -186,6 +206,7 @@ def main():
     python = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
     def run(name, argv):
+        diagnostic = None
         try:
             result = subprocess.run(
                 argv,
@@ -199,9 +220,11 @@ def main():
                 check=False,
             )
             passed = assess(name, result.returncode, result.stdout)
+            if name == "regressions" and not passed:
+                diagnostic = regression_failure_diagnostic(result.stderr)
             log = redact(result.stdout + result.stderr, REGRESSION_CANARIES)
             code = result.returncode
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             passed, log, code = False, "BLOCKED: check unavailable or timed out\n", None
         path = output / (name + ".log")
         unlinked(path)
@@ -218,6 +241,15 @@ def main():
         if name == "regressions" and passed:
             checks[-1]["result"] = strict_json_loads(result.stdout)
         print(name + ": " + checks[-1]["status"], flush=True)
+        if name == "regressions" and not passed:
+            print(
+                json.dumps(
+                    diagnostic
+                    or {"profile": "FORGESTRA_FACTORY_FAILURE_V1", "status": "INVALID_DIAGNOSTIC"},
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
         return passed
 
     passed = run("regressions", [sys.executable, "-I", "scripts/run_safety_isolated.py"])
@@ -348,7 +380,7 @@ def main():
             and passed
         )
         passed = run("shellcheck", [tools["shellcheck"], *SHELL_SCOPE]) and passed
-    except (OSError, ValueError, KeyError):
+    except OSError, ValueError, KeyError:
         passed = False
         checks.append({"name": "native-tools", "status": "BLOCKED"})
     bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")

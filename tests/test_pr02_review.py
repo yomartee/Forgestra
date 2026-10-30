@@ -18,6 +18,8 @@ from forgestra_safety import Blocked
 import bootstrap
 import ci
 import record_pr02_evidence as recorder
+import acquire_tools
+import check_safety
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -117,8 +119,9 @@ class PR02ReviewTests(unittest.TestCase):
     def test_bootstrap_rejects_unreviewed_setup_before_creating_environment(self):
         self.source_fixture()
         (self.root / "setup.py").write_text('raise AssertionError("must never execute")')
-        with patch.object(bootstrap, "ROOT", self.root), patch(
-            "subprocess.run", side_effect=AssertionError("no process before validation")
+        with (
+            patch.object(bootstrap, "ROOT", self.root),
+            patch("subprocess.run", side_effect=AssertionError("no process before validation")),
         ):
             with self.assertRaises((Blocked, ValueError)):
                 bootstrap.bootstrap(self.root)
@@ -263,3 +266,77 @@ class PR02ReviewTests(unittest.TestCase):
             code = main(["doctor", "--config", str(file)])
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(output.getvalue())["status"], "BLOCKED")
+
+    def test_acquisition_phase_codes_do_not_echo_failures_or_child_output(self):
+        for phase in ("SOURCE_CONTRACT", "NATIVE_TOOLS", "WHEEL_DIRECTORY", "WHEEL_DOWNLOAD"):
+            secret = "PRIVATE_ACQUISITION_VALUE"
+            with (
+                patch.object(acquire_tools, "ROOT", self.root),
+                patch(
+                    "forgestra.verification.validate_source",
+                    side_effect=ValueError(secret) if phase == "SOURCE_CONTRACT" else None,
+                ),
+                patch.object(
+                    acquire_tools,
+                    "native_tools",
+                    side_effect=ValueError(secret) if phase == "NATIVE_TOOLS" else None,
+                ),
+                patch.object(
+                    acquire_tools,
+                    "unlinked",
+                    side_effect=ValueError(secret) if phase == "WHEEL_DIRECTORY" else None,
+                ),
+                patch.object(
+                    acquire_tools.subprocess,
+                    "run",
+                    return_value=type(
+                        "Result", (), {"returncode": 1, "stdout": secret, "stderr": secret}
+                    )(),
+                ) as child,
+                patch.object(
+                    acquire_tools.urllib.request,
+                    "urlopen",
+                    side_effect=AssertionError("No network"),
+                ),
+                patch.object(sys, "argv", ["acquire_tools.py", "--download"]),
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                self.assertEqual(acquire_tools.main(), 1)
+                self.assertEqual(
+                    json.loads(output.getvalue()),
+                    {"status": "BLOCKED", "reason": "Tool acquisition incomplete", "phase": phase},
+                )
+                self.assertNotIn(secret, output.getvalue())
+                self.assertEqual(child.call_count, int(phase == "WHEEL_DOWNLOAD"))
+
+    def test_native_checksum_failure_stays_blocked_before_extraction(self):
+        with self.assertRaises(ValueError):
+            acquire_tools.extract_verified(b"not a valid trusted archive", {"sha256": "0" * 64})
+
+    def test_ci_exposes_only_one_valid_bounded_factory_diagnostic(self):
+        counts = {f: 0 for f in check_safety.COUNT_FIELDS}
+        counts.update(collected=1, tests=1, failures=1)
+        value = {
+            "profile": check_safety.DIAGNOSTIC_PROFILE,
+            "counts": counts,
+            "test_ids": ["test_safety.SafetyTests.test_zero_tests_fail"],
+            "ids_omitted": 0,
+            "unlisted_count": 0,
+        }
+        line = check_safety.DIAGNOSTIC_PREFIX + json.dumps(value)
+        result = ci.regression_failure_diagnostic("PRIVATE_STDERR_VALUE\n" + line + "\n")
+        self.assertEqual(result, value)
+        self.assertNotIn("PRIVATE_STDERR_VALUE", json.dumps(result))
+        invalid = {"profile": check_safety.DIAGNOSTIC_PROFILE, "status": "INVALID_DIAGNOSTIC"}
+        for stderr in (
+            "PRIVATE_STDERR_VALUE",
+            line + "\n" + line,
+            check_safety.DIAGNOSTIC_PREFIX + "{" + '"profile":"one","profile":"two"}',
+            check_safety.DIAGNOSTIC_PREFIX + "x" * 12_001,
+            check_safety.DIAGNOSTIC_PREFIX
+            + json.dumps({**value, "test_ids": ["customer.PRIVATE_METHOD"]}),
+            check_safety.DIAGNOSTIC_PREFIX
+            + json.dumps({**value, "counts": {**counts, "errors": False}}),
+        ):
+            self.assertEqual(ci.regression_failure_diagnostic(stderr), invalid)
+        self.assertFalse(ci.assess("regressions", 1, json.dumps({"status": "PASSED"})))
