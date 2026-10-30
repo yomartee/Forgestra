@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "name": "taskboard",
+  "authentication": {
+    "mode": "hasura-jwt",
+    "cookie": "forgestra_user",
+    "role": "user",
+    "owner_field": "owner_id"
+  },
+  "resources": [
+    {
+      "name": "tasks",
+      "label": "Tasks",
+      "fields": [
+        {
+          "name": "title",
+          "label": "Title",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "done",
+          "label": "Done",
+          "type": "boolean",
+          "nullable": false
+        },
+        {
+          "name": "notes",
+          "label": "Notes",
+          "type": "string",
+          "nullable": true
+        }
+      ]
+    }
+  ]
+}

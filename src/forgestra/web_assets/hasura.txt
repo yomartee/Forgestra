@@ -1,0 +1,63 @@
+import { resources, operations, type DomainRecord, type Operation } from "./domain.ts";
+import type { OperationTypes } from "./models.ts";
+export class ContractError extends Error {}
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function resourceByName(name: string) {
+  const resource = resources.find(r => r.name === name);
+  if (!resource) throw new ContractError("Unknown resource");
+  return resource;
+}
+function object(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function input(resource: string, value: unknown, partial: boolean) {
+  const fields = resourceByName(resource).fields;
+  if (!object(value) || Object.keys(value).some(k => !fields.some(f => f.name === k))) throw new ContractError("Invalid fields");
+  if (partial && Object.keys(value).length === 0) throw new ContractError("Empty update");
+  for (const field of fields) {
+    const v = value[field.name];
+    if (v === undefined && (partial || field.nullable)) continue;
+    if (v === null && field.nullable) continue;
+    if (typeof v !== field.type || typeof v === "string" && v.length > 1000 || typeof v === "number" && !Number.isFinite(v)) throw new ContractError("Invalid value");
+  }
+  return value;
+}
+export function validateRequest(value: unknown): { operation: Operation; variables: Record<string, unknown> } {
+  if (!object(value) || Object.keys(value).sort().join() !== "operationName,query,variables") throw new ContractError("Invalid operation envelope");
+  const op = operations.find(o => o.name === value.operationName);
+  if (!op || op.query !== value.query || !object(value.variables)) throw new ContractError("Unknown operation");
+  const v = value.variables;
+  const keys = { list: "limit,offset", get: "id", create: "object", update: "id,patch", delete: "id" }[op.kind];
+  if (Object.keys(v).sort().join() !== keys) throw new ContractError("Invalid variables");
+  if (op.kind === "list") {
+    if (!Number.isInteger(v.limit) || (v.limit as number) < 1 || (v.limit as number) > 100 || !Number.isInteger(v.offset) || (v.offset as number) < 0 || (v.offset as number) > 10000) throw new ContractError("Invalid pagination");
+  } else if (op.kind !== "create" && (typeof v.id !== "string" || !uuid.test(v.id))) throw new ContractError("Invalid record id");
+  if (op.kind === "create") input(op.resource, v.object, false);
+  if (op.kind === "update") input(op.resource, v.patch, true);
+  return { operation: op, variables: v };
+}
+export function validRecord(resource: string, value: unknown): value is DomainRecord {
+  if (!object(value) || typeof value.id !== "string" || !uuid.test(value.id)) return false;
+  if (Object.keys(value).sort().join() !== ["id", ...resourceByName(resource).fields.map(f=>f.name)].sort().join()) return false;
+  try { const {id: _id, ...values} = value; void _id; input(resource, values, false); return true; } catch { return false; }
+}
+export function validResult(op: Operation, data: unknown): boolean {
+  if (!object(data)) return false;
+  if (op.kind !== "list") return data.item === null || validRecord(op.resource, data.item);
+  return Array.isArray(data.rows) && data.rows.length <= 100 && data.rows.every(r => validRecord(op.resource, r))
+    && object(data.aggregate) && object(data.aggregate.aggregate) && Number.isSafeInteger(data.aggregate.aggregate.count) && (data.aggregate.aggregate.count as number) >= 0;
+}
+export async function execute(name: string, variables: Record<string, unknown>) {
+  const op = operations.find(o => o.name === name);
+  if (!op) throw new ContractError("Unknown operation");
+  const body = { operationName: name, query: op.query, variables };
+  validateRequest(body);
+  const response = await fetch("/api/graphql", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
+  if (!response.ok) throw { message: response.status === 401 ? "Sign in required" : "Request denied or backend unavailable", statusCode: response.status };
+  const result: unknown = await response.json();
+  if (!object(result) || result.errors || !validResult(op, result.data)) throw new ContractError("Invalid backend response");
+  return result.data as { rows: DomainRecord[]; aggregate: { aggregate: { count: number } }; item: DomainRecord | null };
+}
+export async function typedExecute<N extends keyof OperationTypes>(name: N, variables: OperationTypes[N]["variables"]): Promise<OperationTypes[N]["data"]> {
+  return await execute(name, variables as Record<string, unknown>) as OperationTypes[N]["data"];
+}

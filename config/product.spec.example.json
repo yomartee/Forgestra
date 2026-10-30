@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "request_id": "07100000-0000-4000-8000-000000000001",
+  "repository": "yomartee/forgestra-pr07-fixture",
+  "frontend": {
+    "repository": "yomartee/forgestra-pr07-fixture",
+    "path": "."
+  },
+  "components": [
+    "react",
+    "react-dom",
+    "@refinedev/core"
+  ],
+  "domain": {
+    "schema_version": 1,
+    "name": "taskboard",
+    "authentication": {
+      "mode": "hasura-jwt",
+      "cookie": "forgestra_user",
+      "role": "user",
+      "owner_field": "owner_id"
+    },
+    "resources": [
+      {
+        "name": "tasks",
+        "label": "Tasks",
+        "fields": [
+          {
+            "name": "title",
+            "label": "Title",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "done",
+            "label": "Done",
+            "type": "boolean",
+            "nullable": false
+          },
+          {
+            "name": "notes",
+            "label": "Notes",
+            "type": "string",
+            "nullable": true
+          }
+        ]
+      }
+    ]
+  }
+}

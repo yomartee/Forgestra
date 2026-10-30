@@ -1,0 +1,4 @@
+Custom application code belongs in src/custom/. Generation creates a NEW tree
+only and never synchronizes or overwrites an existing project. To regenerate,
+review a new candidate and carry custom code across explicitly. Schema changes,
+renames/deletions and arbitrary existing-tree merges are unsupported.

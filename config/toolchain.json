@@ -1,0 +1,52 @@
+{
+  "python": "3.14.3",
+  "native": {
+    "linux": {
+      "actionlint": {
+        "url": "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz",
+        "sha256": "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8",
+        "member": "actionlint"
+      },
+      "shellcheck": {
+        "url": "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz",
+        "sha256": "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198",
+        "member": "shellcheck-v0.11.0/shellcheck"
+      }
+    },
+    "windows": {
+      "actionlint": {
+        "url": "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_windows_amd64.zip",
+        "sha256": "6e7241b51e6817ea6a047693d8e6fed13b31819c9a0dd6c5a726e1592d22f6e9",
+        "member": "actionlint.exe"
+      },
+      "shellcheck": {
+        "url": "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.zip",
+        "sha256": "8a4e35ab0b331c85d73567b12f2a444df187f483e5079ceffa6bda1faa2e740e",
+        "member": "shellcheck.exe"
+      }
+    }
+  },
+  "actions": {
+    "actions/checkout": {
+      "tag": "v7.0.1",
+      "sha": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "url": "https://github.com/actions/checkout/releases/tag/v7.0.1"
+    },
+    "actions/setup-python": {
+      "tag": "v7.1.0",
+      "sha": "6d4fd22b20465ccc0f7354476588e8df7c9ca0e0",
+      "url": "https://github.com/actions/setup-python/releases/tag/v7.1.0"
+    },
+    "actions/upload-artifact": {
+      "tag": "v7.0.2",
+      "sha": "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+      "url": "https://github.com/actions/upload-artifact/releases/tag/v7.0.2"
+    },
+    "actions/setup-node": {
+      "tag": "v7.1.0",
+      "sha": "949feb2413d6458794dcd2491c4babbbce0c15c1",
+      "url": "https://github.com/actions/setup-node/releases/tag/v7.1.0"
+    }
+  },
+  "node": "24.14.0"
+}

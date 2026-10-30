@@ -1,0 +1,12 @@
+# Review routing only; live protections and independent reviewer remain pending.
+# Experimental local source; no autonomous approval or merge authority.
+* @yomartee
+/.github/ @yomartee
+/scripts/ @yomartee
+/src/ @yomartee
+/config/ @yomartee
+/requirements/ @yomartee
+/integrations/ @yomartee
+/tests/ @yomartee
+/AGENTS.md @yomartee
+/pyproject.toml @yomartee

@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+.tools/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.forgestra-stage-*/
+
+build/
+dist/
+*.egg-info/

@@ -1,0 +1,4 @@
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+const configuration = { output: "standalone", outputFileTracingRoot: dirname(fileURLToPath(import.meta.url)), poweredByHeader: false, devIndicators: false };
+export default configuration;

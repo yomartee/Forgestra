@@ -1,0 +1,33 @@
+import type { BaseRecord, DataProvider } from "@refinedev/core";
+import { execute, resourceByName } from "./hasura";
+export const dataProvider: DataProvider = {
+  getApiUrl: () => "/api/graphql",
+  getList: async <T extends BaseRecord>({ resource, pagination, filters, sorters }: Parameters<DataProvider["getList"]>[0]) => {
+    resourceByName(resource);
+    if (filters?.length || sorters?.length) throw new Error("Filtering/sorting is outside this bounded contract");
+    const limit = pagination?.pageSize ?? 25;
+    const page = pagination?.currentPage ?? 1;
+    const data = await execute(`${resource}_list`, { limit, offset: (page - 1) * limit });
+    return { data: data.rows as T[], total: data.aggregate.aggregate.count };
+  },
+  getOne: async <T extends BaseRecord>({ resource, id }: Parameters<DataProvider["getOne"]>[0]) => {
+    const data = await execute(`${resource}_get`, { id: String(id) });
+    if (!data.item) throw { message: "Record unavailable", statusCode: 404 };
+    return { data: data.item as T };
+  },
+  create: async <T extends BaseRecord, V>({ resource, variables }: Parameters<DataProvider["create"]>[0] & { variables: V }) => {
+    const data = await execute(`${resource}_create`, { object: variables });
+    if (!data.item) throw { message: "Create denied", statusCode: 403 };
+    return { data: data.item as T };
+  },
+  update: async <T extends BaseRecord, V>({ resource, id, variables }: Parameters<DataProvider["update"]>[0] & { variables: V }) => {
+    const data = await execute(`${resource}_update`, { id: String(id), patch: variables });
+    if (!data.item) throw { message: "Record unavailable", statusCode: 404 };
+    return { data: data.item as T };
+  },
+  deleteOne: async <T extends BaseRecord>({ resource, id }: Parameters<DataProvider["deleteOne"]>[0]) => {
+    const data = await execute(`${resource}_delete`, { id: String(id) });
+    if (!data.item) throw { message: "Record unavailable", statusCode: 404 };
+    return { data: data.item as T };
+  },
+};

@@ -1,0 +1,42 @@
+{
+  "inventory": {
+    "python_entry_points": {
+      "mcp-server/repo-operations.py": "publication",
+      "mcp-server/sales_server.py": "outreach",
+      "scripts/agents/code_auditor.py": "paid_provider",
+      "scripts/agents/frontend_engine.py": "target_modification",
+      "scripts/agents/repo_assessor.py": "paid_provider",
+      "scripts/agents/repo_improver.py": "target_modification",
+      "scripts/agents/sync_manager.py": "synchronization",
+      "scripts/agents/trend_hunter.py": "paid_provider",
+      "scripts/architecture_audit.py": "publication",
+      "scripts/autonomous_growth.py": "product_creation",
+      "scripts/autonomous_janitor.py": "target_modification",
+      "scripts/install_remote.py": "target_modification",
+      "scripts/self_heal.py": "self_healing",
+      "scripts/transform/detect_conflicts.py": "synchronization",
+      "scripts/universal/universal_build.py": "target_modification",
+      "scripts/universal/universal_lint.py": "target_modification",
+      "scripts/universal/universal_test.py": "target_modification",
+      "scripts/verify_setup.py": "target_modification"
+    },
+    "workflows": [
+      ".github/workflows/auditor-loop.yml",
+      ".github/workflows/bidirectional-sync.yml",
+      ".github/workflows/claude.yml",
+      ".github/workflows/factory-clock.yml",
+      ".github/workflows/frontend-lifecycle.yml",
+      ".github/workflows/growth-engine.yml",
+      ".github/workflows/hunter-loop.yml",
+      ".github/workflows/install-to-repo.yml",
+      ".github/workflows/marketing_agent.yml",
+      ".github/workflows/monorepo-to-polyrepo.yml",
+      ".github/workflows/repository-assessment.yml",
+      ".github/workflows/self-healing.yml",
+      "templates/workflows/universal-ci.yml",
+      "growth-engine-workflow.yml"
+    ]
+  },
+  "origin": "AUTHORED_ENTRYPOINT_TEST_INVENTORY_NOT_HISTORICAL_EVIDENCE",
+  "schema_version": 1
+}
