@@ -28,6 +28,7 @@ from local_generation import (
     ENV_EXAMPLE,
 )
 from check_safety import run_suite
+import check_safety
 from check_workflows import validate
 from inspect_local import inspect
 from public_contract import containment
@@ -570,6 +571,111 @@ class SafetyTests(unittest.TestCase):
             self.assertNotIn("canary-", result.stdout + result.stderr)
             self.assertEqual(customer.read_bytes(), before)
         self.assertEqual([p.name for p in self.parent.iterdir()], ["requirements.txt"])
+
+    def test_failure_diagnostic_uses_declared_ids_without_subtest_values(self):
+        known = SafetyTests("test_zero_tests_fail")
+
+        class Subcase(unittest.TestCase):
+            test_case = known
+
+            def id(self):
+                raise AssertionError("must not render private parameter values")
+
+        result = unittest.TestResult()
+        result.testsRun = 1
+        result.failures.append((Subcase(), "PRIVATE_SUBTEST_VALUE"))
+        counts = {f: 0 for f in check_safety.COUNT_FIELDS}
+        counts.update(collected=1, tests=1, failures=1)
+        value = check_safety.failure_diagnostic(result, counts)
+        self.assertEqual(value["test_ids"], ["test_safety.SafetyTests.test_zero_tests_fail"])
+        self.assertNotIn("PRIVATE_SUBTEST_VALUE", json.dumps(value))
+        self.assertTrue(
+            check_safety.valid_failure_diagnostic(value, check_safety.factory_test_ids())
+        )
+
+    def test_failure_diagnostic_caps_ids_and_counts_unlisted_cases(self):
+        identifiers = sorted(
+            n for n in check_safety.factory_test_ids() if n.startswith("test_safety.SafetyTests.")
+        )[:25]
+        self.assertEqual(len(identifiers), 25)
+        result = unittest.TestResult()
+        for name in identifiers:
+            result.failures.append((SafetyTests(name.rsplit(".", 1)[1]), "not public"))
+        result.errors.append((unittest.FunctionTestCase(lambda: None), "PRIVATE_ERROR_VALUE"))
+        result.testsRun = 26
+        counts = {f: 0 for f in check_safety.COUNT_FIELDS}
+        counts.update(collected=26, tests=26, failures=25, errors=1)
+        value = check_safety.failure_diagnostic(result, counts)
+        self.assertEqual(len(value["test_ids"]), 20)
+        self.assertEqual(value["ids_omitted"], 5)
+        self.assertEqual(value["unlisted_count"], 1)
+        self.assertNotIn("PRIVATE_ERROR_VALUE", json.dumps(value))
+
+    def test_failure_diagnostics_preserve_zero_skip_and_expected_failure_gate(self):
+        stream = io.StringIO()
+        empty = run_suite(unittest.TestSuite(), stream)
+        self.assertEqual(empty["status"], "FAILED")
+        line = next(
+            s
+            for s in stream.getvalue().splitlines()
+            if s.startswith(check_safety.DIAGNOSTIC_PREFIX)
+        )
+        self.assertEqual(
+            json.loads(line.removeprefix(check_safety.DIAGNOSTIC_PREFIX))["counts"]["tests"], 0
+        )
+
+        class Fixture(unittest.TestCase):
+            @unittest.skip("PRIVATE_SKIP_VALUE")
+            def test_skip(self):
+                pass
+
+            @unittest.expectedFailure
+            def test_expected(self):
+                self.fail("canary-log-credential")
+
+            @unittest.expectedFailure
+            def test_unexpected(self):
+                pass
+
+        stream = io.StringIO()
+        document = run_suite(unittest.defaultTestLoader.loadTestsFromTestCase(Fixture), stream)
+        self.assertEqual(document["status"], "FAILED")
+        self.assertEqual(document["skipped"], 1)
+        self.assertEqual(document["expected_failures"], 1)
+        self.assertEqual(document["unexpected_successes"], 1)
+        line = next(
+            s
+            for s in stream.getvalue().splitlines()
+            if s.startswith(check_safety.DIAGNOSTIC_PREFIX)
+        )
+        value = json.loads(line.removeprefix(check_safety.DIAGNOSTIC_PREFIX))
+        self.assertEqual(value["unlisted_count"], 3)
+        self.assertNotIn("PRIVATE_SKIP_VALUE", line)
+        self.assertNotIn("canary-log-credential", line)
+        self.assertFalse(check_safety.valid_regression_result(document))
+
+    def test_diagnostic_count_and_identifier_contract_is_strict(self):
+        counts = {f: 0 for f in check_safety.COUNT_FIELDS}
+        counts.update(collected=1, tests=1, failures=1)
+        value = {
+            "profile": check_safety.DIAGNOSTIC_PROFILE,
+            "counts": counts,
+            "test_ids": ["test_safety.SafetyTests.test_zero_tests_fail"],
+            "ids_omitted": 0,
+            "unlisted_count": 0,
+        }
+        known = check_safety.factory_test_ids()
+        self.assertTrue(check_safety.valid_failure_diagnostic(value, known))
+        for changed in (
+            {**value, "test_ids": ["customer.PRIVATE_METHOD"]},
+            {**value, "test_ids": ["test_safety.SafetyTests.test_zero_tests_fail"] * 21},
+            {**value, "unlisted_count": True},
+            {**value, "counts": {**counts, "errors": False}},
+            {**value, "counts": {**counts, "tests": 1_000_001}},
+            {**value, "ids_omitted": 2},
+            {**value, "extra": "PRIVATE_VALUE"},
+        ):
+            self.assertFalse(check_safety.valid_failure_diagnostic(changed, known))
 
 
 if __name__ == "__main__":

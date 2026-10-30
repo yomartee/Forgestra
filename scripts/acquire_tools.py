@@ -88,13 +88,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--download", action="store_true", help="Explicit public HTTPS acquisition")
     args = parser.parse_args()
+    phase = "SOURCE_CONTRACT"
     try:
         validate_source(ROOT)
+        phase = "NATIVE_TOOLS"
         native_tools(args.download)
+        phase = "WHEEL_DIRECTORY"
         wheels = ROOT / ".tools/wheels"
         unlinked(wheels)
         wheels.mkdir(parents=True, exist_ok=True)
         if args.download:
+            phase = "WHEEL_DOWNLOAD"
             argv = [
                 sys.executable,
                 "-I",
@@ -143,7 +147,11 @@ def main():
         TypeError,
         SyntaxError,
     ):
-        print(json.dumps({"status": "BLOCKED", "reason": "Tool acquisition incomplete"}))
+        print(
+            json.dumps(
+                {"status": "BLOCKED", "reason": "Tool acquisition incomplete", "phase": phase}
+            )
+        )
         return 1
 
 

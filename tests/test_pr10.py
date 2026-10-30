@@ -196,8 +196,47 @@ class OptionalIntegrationTests(unittest.TestCase):
                     self.assertEqual(i.dispatch(name, {}, self.root), i.error("KILL_SWITCH"))
                 run.assert_not_called()
 
+    def client_python(self):
+        """Use a copied optional-environment interpreter; keep link rejection intact."""
+        environment = self.parent / "client-env"
+        subprocess.run(
+            [
+                str(Path(sys.executable).resolve(strict=True)),
+                "-I",
+                "-m",
+                "venv",
+                "--copies",
+                "--without-pip",
+                str(environment),
+            ],
+            cwd=self.parent,
+            env=i.child_environment(),
+            capture_output=True,
+            timeout=60,
+            check=True,
+        )
+        return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+    def test_copied_client_interpreter_keeps_alias_and_versioned_name_denial(self):
+        python = self.client_python()
+        self.assertTrue(python.is_file())
+        self.assertFalse(python.is_symlink())
+        self.assertEqual(
+            i.client_config(python, self.root)["mcpServers"]["forgestra-local-readonly"]["command"],
+            str(python),
+        )
+        alias = self.parent / "alias" / python.name
+        alias.parent.mkdir()
+        alias.symlink_to(python)
+        with self.assertRaises(Blocked):
+            i.client_config(alias, self.root)
+        versioned = self.parent / "python3.14"
+        versioned.write_bytes(python.read_bytes())
+        with self.assertRaises(Blocked):
+            i.client_config(versioned, self.root)
+
     def test_client_configuration_is_only_a_read_only_plan(self):
-        result = i.client_config(Path(sys.executable).absolute(), self.root)
+        result = i.client_config(self.client_python(), self.root)
         entry = result["mcpServers"]["forgestra-local-readonly"]
         self.assertEqual(entry["env"], {})
         self.assertEqual(
@@ -213,7 +252,15 @@ class OptionalIntegrationTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue()), i.catalogue())
         with redirect_stdout(io.StringIO()) as output:
             self.assertEqual(
-                main(["integrations", "--client-python", sys.executable, "--root", str(self.root)]),
+                main(
+                    [
+                        "integrations",
+                        "--client-python",
+                        str(self.client_python()),
+                        "--root",
+                        str(self.root),
+                    ]
+                ),
                 0,
             )
         self.assertEqual(json.loads(output.getvalue())["activation"], "NOT_APPLIED")
