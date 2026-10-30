@@ -10,6 +10,9 @@ import tarfile
 import zipfile
 from pathlib import Path
 import unittest
+import subprocess
+from contextlib import ExitStack, redirect_stdout
+import public_checks
 from typing import Any
 from unittest.mock import patch
 
@@ -176,12 +179,13 @@ class PublicCandidateTests(unittest.TestCase):
             directory.mkdir(parents=True)
             (directory / "report.json").write_text("{}")
             (directory / "regressions.log").write_text("")
-            with patch.object(public_checks, "ROOT", root), patch.object(
-                p, "absent_private"
-            ), patch.object(p, "containment"), patch.object(p, "inventory", return_value={}), patch(
-                "forgestra.verification.validate_source"
-            ), patch(
-                "subprocess.run"
+            with (
+                patch.object(public_checks, "ROOT", root),
+                patch.object(p, "absent_private"),
+                patch.object(p, "containment"),
+                patch.object(p, "inventory", return_value={}),
+                patch("forgestra.verification.validate_source"),
+                patch("subprocess.run"),
             ):
                 self.assertEqual(public_checks.main(), 1)
             summary = json.loads((root / ".tools/public-results/upload/summary.json").read_text())
@@ -352,3 +356,195 @@ class PublicCandidateTests(unittest.TestCase):
                     {"profile": p.PUBLIC, "files": {}, "license_approval": "PENDING"},
                     sbom(ROOT),
                 )
+
+    def test_public_failure_diagnostic_never_renders_exception_details(self):
+        private = "canary-provider-do-not-use C:/private/workspace secret-argument"
+        cases = (
+            (FileNotFoundError(2, private, private), "MISSING_FILE"),
+            (PermissionError(13, private, private), "PERMISSION_DENIED"),
+            (Blocked(private), "POLICY_BLOCKED"),
+            (subprocess.TimeoutExpired([private], 3, output=private, stderr=private), "TIMEOUT"),
+            (subprocess.CalledProcessError(1, [private], private, private), "CHILD_FAILED"),
+            (TypeError(private), "TYPE_ERROR"),
+            (KeyError(private), "KEY_ERROR"),
+        )
+        for error, category in cases:
+            with self.subTest(category=category), redirect_stdout(io.StringIO()) as output:
+                public_checks.emit_failure("WEB_CREATION", error)
+            value = json.loads(output.getvalue())
+            self.assertEqual(value["profile"], public_checks.FAILURE_PROFILE)
+            self.assertEqual(value["stage"], "WEB_CREATION")
+            self.assertEqual(value["category"], category)
+            self.assertNotIn(private, output.getvalue())
+            self.assertNotIn("canary-provider", output.getvalue())
+            self.assertLess(len(output.getvalue()), 220)
+
+    def test_public_failure_diagnostic_rejects_unknown_and_invalid_fields(self):
+        class HostileType(type):
+            def __hash__(self):
+                raise AssertionError("must not hash an unknown exception class")
+
+        class Hostile(OSError, metaclass=HostileType):
+            def __str__(self):
+                raise AssertionError("must not render unknown exception")
+
+            @property
+            def winerror(self):
+                raise AssertionError("must not inspect unknown exception")
+
+            @winerror.setter
+            def winerror(self, value):
+                raise AssertionError("must not mutate unknown exception")
+
+        self.assertEqual(public_checks.failure_diagnostic([], Hostile())["stage"], "UNKNOWN")
+        self.assertEqual(
+            public_checks.failure_diagnostic("PRIVATE_STAGE", Hostile())["category"], "UNKNOWN"
+        )
+        for number in (True, False, -1, 65536, 10**100, "private", None, float("nan")):
+            error = OSError("private error")
+            setattr(error, "errno", number)
+            setattr(error, "winerror", number)
+            value = public_checks.failure_diagnostic("WEB_CREATION", error)
+            self.assertNotIn("errno", value)
+            self.assertNotIn("winerror", value)
+        for number in (0, 2, 65535):
+            error = OSError("private error")
+            setattr(error, "errno", number)
+            setattr(error, "winerror", number)
+            value = public_checks.failure_diagnostic("WEB_CREATION", error)
+            self.assertEqual((value["errno"], value["winerror"]), (number, number))
+
+    def public_failure_case(self, root, stage, error, stats=None):
+        """Unit orchestration stubs, never factory acceptance or approval evidence."""
+        import check_safety
+
+        stats = stats or {
+            "status": "PASSED",
+            "tests": 1,
+            "collected": 1,
+            "errors": 0,
+            "failures": 0,
+            "skipped": 0,
+            "expected_failures": 0,
+            "unexpected_successes": 0,
+        }
+        inner = root / ".tools/pr02-results"
+        inner.mkdir(parents=True)
+        (inner / "report.json").write_text(
+            json.dumps({"checks": [{"name": "regressions", "result": stats}]})
+        )
+        (inner / "regressions.log").write_text(json.dumps(stats) + "\n")
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(public_checks, "ROOT", root))
+            for function in ("absent_private", "containment"):
+                stack.enter_context(patch.object(p, function))
+            stack.enter_context(
+                patch.object(p, "inventory", return_value={"unit_fixture": "0" * 64})
+            )
+            stack.enter_context(patch("forgestra.verification.validate_source"))
+            stack.enter_context(
+                patch(
+                    "record_pr02_evidence.valid_report",
+                    side_effect=lambda *a: check_safety.valid_regression_result(stats),
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    public_checks.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)
+                )
+            )
+            stack.enter_context(patch.object(public_checks, "packages", return_value={"files": {}}))
+            stack.enter_context(
+                patch("record_pr03_evidence.installed_cli", return_value={"status": "PASSED_LOCAL"})
+            )
+            for module, function in (
+                ("record_pr04_evidence", "repair_acceptance"),
+                ("record_pr05_evidence", "adoption_acceptance"),
+            ):
+                stack.enter_context(
+                    patch(module + "." + function, return_value={"unit_fixture": "not acceptance"})
+                )
+            for target in (
+                "record_pr04_evidence.valid_repair",
+                "record_pr05_evidence.valid_adoption",
+            ):
+                stack.enter_context(patch(target, return_value=True))
+            stack.enter_context(patch("forgestra.release.sbom", return_value=p.EMPTY_BOM))
+            failure_target = {
+                "PACKAGES": "public_checks.packages",
+                "WEB_CREATION": "pr07_creation_validation.acceptance",
+            }.get(stage)
+            if failure_target:
+                stack.enter_context(patch(failure_target, side_effect=error))
+            output = stack.enter_context(redirect_stdout(io.StringIO()))
+            code = public_checks.main()
+        summary = json.loads((root / ".tools/public-results/summary.json").read_bytes())
+        diagnostic = [
+            json.loads(line)
+            for line in output.getvalue().splitlines()
+            if line.startswith("{")
+            and json.loads(line).get("profile") == public_checks.FAILURE_PROFILE
+        ]
+        return code, summary, diagnostic, output.getvalue()
+
+    def test_public_web_creation_exception_keeps_failure_and_upload_scope(self):
+        with private_output_workspace() as root:
+            private = "canary-provider-do-not-use C:/private/missing.json"
+            code, summary, diagnostics, output = self.public_failure_case(
+                root, "WEB_CREATION", FileNotFoundError(2, private, private)
+            )
+            self.assertEqual(code, 1)
+            self.assertEqual(summary["status"], "FAILED")
+            self.assertEqual(summary["tests"], 1)
+            self.assertEqual(
+                diagnostics,
+                [
+                    {
+                        "profile": public_checks.FAILURE_PROFILE,
+                        "stage": "WEB_CREATION",
+                        "category": "MISSING_FILE",
+                        "errno": 2,
+                    }
+                ],
+            )
+            self.assertNotIn(private, output)
+            self.assertFalse((root / ".tools/public-results/web-creation-fixture.json").exists())
+            self.assertEqual(
+                set(p.validate_upload(root / ".tools/public-results/upload")), set(p.UPLOAD)
+            )
+            self.assertEqual(set(summary), set(self.summary()))
+
+    def test_public_diagnostic_tracks_packages_and_unexpected_schema_failures(self):
+        for stage, error, category in (
+            ("PACKAGES", Blocked("private"), "POLICY_BLOCKED"),
+            ("WEB_CREATION", TypeError("private"), "TYPE_ERROR"),
+            ("WEB_CREATION", KeyError("private"), "KEY_ERROR"),
+            ("WEB_CREATION", subprocess.TimeoutExpired(["private"], 1), "TIMEOUT"),
+        ):
+            with self.subTest(stage=stage, category=category), private_output_workspace() as root:
+                code, summary, diagnostics, _ = self.public_failure_case(root, stage, error)
+                self.assertEqual((code, summary["status"]), (1, "FAILED"))
+                self.assertEqual(
+                    (diagnostics[0]["stage"], diagnostics[0]["category"]), (stage, category)
+                )
+
+    def test_public_diagnostics_cannot_clear_zero_or_skipped_regressions(self):
+        for tests, skipped in ((0, 0), (1, 1)):
+            with self.subTest(tests=tests, skipped=skipped), private_output_workspace() as root:
+                stats = {
+                    "status": "FAILED",
+                    "tests": tests,
+                    "collected": tests,
+                    "errors": 0,
+                    "failures": 0,
+                    "skipped": skipped,
+                    "expected_failures": 0,
+                    "unexpected_successes": 0,
+                }
+                code, summary, diagnostics, _ = self.public_failure_case(
+                    root, "INNER_CI", None, stats
+                )
+                self.assertEqual((code, summary["status"]), (1, "FAILED"))
+                self.assertEqual(summary["tests"], tests)
+                self.assertEqual(diagnostics[0]["stage"], "INNER_CI")
+                self.assertEqual(summary["checks"], [{"name": "inner-ci", "status": "FAILED"}])

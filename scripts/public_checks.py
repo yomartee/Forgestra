@@ -191,6 +191,71 @@ def packages():
     return result
 
 
+FAILURE_PROFILE = "FORGESTRA_PUBLIC_FAILURE_V1"
+FAILURE_STAGES = frozenset(
+    {
+        "OUTPUT",
+        "SOURCE",
+        "INNER_CI",
+        "PACKAGES",
+        "INSTALLED_CLI",
+        "REPAIR",
+        "ADOPTION",
+        "WEB_CREATION",
+        "SYNC",
+        "MAINTENANCE",
+        "MCP",
+        "RELEASE",
+        "LINKS",
+        "SOURCE_DRIFT",
+        "SBOM",
+    }
+)
+
+
+def failure_diagnostic(stage, error):
+    """Only fixed factory metadata; exception text/args are never rendered."""
+    from forgestra_safety import Blocked
+
+    categories = {
+        FileNotFoundError: "MISSING_FILE",
+        FileExistsError: "ALREADY_EXISTS",
+        PermissionError: "PERMISSION_DENIED",
+        NotADirectoryError: "PATH_ERROR",
+        OSError: "OS_ERROR",
+        Blocked: "POLICY_BLOCKED",
+        subprocess.TimeoutExpired: "TIMEOUT",
+        subprocess.CalledProcessError: "CHILD_FAILED",
+        subprocess.SubprocessError: "PROCESS_ERROR",
+        ValueError: "VALUE_ERROR",
+        TypeError: "TYPE_ERROR",
+        KeyError: "KEY_ERROR",
+        StopIteration: "MISSING_RESULT",
+        IndexError: "INDEX_ERROR",
+        AssertionError: "ASSERTION_ERROR",
+        tarfile.TarError: "TAR_ERROR",
+        zipfile.BadZipFile: "ZIP_ERROR",
+    }
+    value: dict[str, Any] = {
+        "profile": FAILURE_PROFILE,
+        "stage": stage if type(stage) is str and stage in FAILURE_STAGES else "UNKNOWN",
+        "category": next(
+            (category for kind, category in categories.items() if type(error) is kind), "UNKNOWN"
+        ),
+    }
+    # Unknown subclasses may override attribute access; do not inspect them.
+    if value["category"] != "UNKNOWN" and isinstance(error, OSError):
+        for field in ("errno", "winerror"):
+            number = getattr(error, field, None)
+            if type(number) is int and 0 <= number <= 65535:
+                value[field] = number
+    return value
+
+
+def emit_failure(stage, error):
+    print(json.dumps(failure_diagnostic(stage, error), sort_keys=True), flush=True)
+
+
 def main():
     from bootstrap import environment
     from forgestra_safety import Blocked
@@ -224,7 +289,8 @@ def main():
     try:
         unlinked(output)
         output.mkdir(parents=True, exist_ok=False)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as error:
+        emit_failure("OUTPUT", error)
         print(
             json.dumps(
                 {
@@ -248,12 +314,14 @@ def main():
         "reason": "PUBLIC_CHECK_FAILED",
     }
     artifacts: dict[str, Any] = {"profile": PUBLIC, "files": {}, "license_approval": "PENDING"}
+    stage = "SOURCE"
     try:
         absent_private(ROOT)
         containment(ROOT)
         validate_source(ROOT)
         before = inventory(ROOT)
         summary["source_sha256"] = hashlib.sha256(canonical(before)).hexdigest()
+        stage = "INNER_CI"
         run_id = str(uuid.uuid4())
         child = subprocess.run(
             [sys.executable, "-I", "scripts/ci.py", "--run-id", run_id],
@@ -301,6 +369,7 @@ def main():
         summary["tests"] = next(
             c["result"]["tests"] for c in report["checks"] if c["name"] == "regressions"
         )
+        stage = "PACKAGES"
         built = packages()
         artifacts["files"] = built["files"]
         (output / "packages.json").write_text(json.dumps(built, indent=2), encoding="utf-8")
@@ -314,9 +383,13 @@ def main():
             path.write_bytes(canonical(value) + b"\n")
             check(name, passed(value))
 
+        stage = "INSTALLED_CLI"
         receipt("installed-cli", installed_cli(), lambda r: r["status"] == "PASSED_LOCAL")
+        stage = "REPAIR"
         receipt("repair", repair_acceptance(), valid_repair)
+        stage = "ADOPTION"
         receipt("adoption", adoption_acceptance(), valid_adoption)
+        stage = "WEB_CREATION"
         generated = creation()
         web = generated.pop("web")
         receipt(
@@ -324,13 +397,19 @@ def main():
             {"web": web, "creation": generated},
             lambda r: valid_web(r["web"]) and valid_acceptance(r["creation"], r["web"]),
         )
+        stage = "SYNC"
         receipt("sync", sync(), valid_sync)
+        stage = "MAINTENANCE"
         receipt("maintenance", maintenance(), valid_maintenance)
+        stage = "MCP"
         receipt("mcp", mcp(), valid_mcp)
+        stage = "RELEASE"
         receipt("release", release(), valid_release)
+        stage = "LINKS"
         link_result = links(ROOT, source_paths(ROOT))
         (output / "links.json").write_text(json.dumps(link_result, indent=2), encoding="utf-8")
         check("links", link_result["status"] == "PASSED")
+        stage = "SOURCE_DRIFT"
         if before != inventory(ROOT) or {c["name"] for c in summary["checks"]} != set(CHECKS):
             raise ValueError("public source drift")
         summary.update(status="PASSED_LOCAL", reason="NONE")
@@ -346,11 +425,13 @@ def main():
         subprocess.SubprocessError,
         tarfile.TarError,
         zipfile.BadZipFile,
-    ):
+    ) as error:
+        emit_failure(stage, error)
         summary.update(status="FAILED", reason="PUBLIC_CHECK_FAILED")
     try:
         bom = sbom(ROOT)
-    except (OSError, ValueError, TypeError, KeyError, Blocked):
+    except (OSError, ValueError, TypeError, KeyError, Blocked) as error:
+        emit_failure("SBOM", error)
         from public_contract import EMPTY_BOM
 
         bom = EMPTY_BOM
